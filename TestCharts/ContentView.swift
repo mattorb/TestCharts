@@ -8,73 +8,6 @@ struct DataPoint: Identifiable {
   let series: String
 }
 
-struct ContentView: View {
-  // Generate sine wave data
-  let sineData: [DataPoint] = (0..<100).map { i in
-    let x = Double(i)
-    return DataPoint(
-      x: x,
-      y: sin(x * 0.1) * 10,
-      series: "Sine Wave"
-    )
-  }
-  
-  // Generate cosine wave data
-  let cosineData: [DataPoint] = (0..<100).map { i in
-    let x = Double(i)
-    return DataPoint(
-      x: x,
-      y: cos(x * 0.1) * 10,
-      series: "Cosine Wave"
-    )
-  }
-  
-  var allData: [DataPoint] {
-    sineData + cosineData
-  }
-  
-  @State private var selectedPoint: DataPoint?
-  @State private var selectedSeries: String?
-  
-  var body: some View {
-    ScrollView {
-      VStack(spacing: 20) {
-        Text("Wave Comparison")
-          .font(.title)
-          .padding(.top)
-        
-        // Large Chart - Full Width
-        ChartView(
-          data: allData,
-          title: "Large Chart (100%)",
-          selectedPoint: $selectedPoint,
-          selectedSeries: $selectedSeries
-        )
-        .frame(height: 250)
-        
-        // Medium Chart - 75% Width
-        ChartView(
-          data: allData,
-          title: "Medium Chart (75%)",
-          selectedPoint: $selectedPoint,
-          selectedSeries: $selectedSeries
-        )
-        .frame(width: UIScreen.main.bounds.width * 0.75, height: 250)
-        
-        // Small Chart - 50% Width
-        ChartView(
-          data: allData,
-          title: "Small Chart (50%)",
-          selectedPoint: $selectedPoint,
-          selectedSeries: $selectedSeries
-        )
-        .frame(width: UIScreen.main.bounds.width * 0.5, height: 250)
-      }
-      .padding()
-    }
-  }
-}
-
 struct ChartView: View {
   let data: [DataPoint]
   let title: String
@@ -149,7 +82,6 @@ struct ChartView: View {
         .foregroundStyle(.secondary)
       }
       
-      // Series Legend with interaction
       HStack(spacing: 16) {
         ForEach(["Sine Wave", "Cosine Wave"], id: \.self) { series in
           Button(action: {
@@ -176,12 +108,79 @@ struct ChartView: View {
     .padding()
     .background(
       RoundedRectangle(cornerRadius: 10)
-        .fill(Color.white)
+        .fill(Color(uiColor: .systemBackground))
         .shadow(radius: 2)
     )
   }
 }
 
-#Preview {
-  ContentView()
+struct ContentView: View {
+  // Move data generation to a separate type
+  static let sampleData: [DataPoint] = {
+    let sineData = (0..<100).map { i in
+      let x = Double(i)
+      return DataPoint(x: x, y: sin(x * 0.1) * 10, series: "Sine Wave")
+    }
+    
+    let cosineData = (0..<100).map { i in
+      let x = Double(i)
+      return DataPoint(x: x, y: cos(x * 0.1) * 10, series: "Cosine Wave")
+    }
+    
+    return sineData + cosineData
+  }()
+  
+  @State private var selectedPoint: DataPoint?
+  @State private var selectedSeries: String?
+  
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 20) {
+        Text("Wave Comparison")
+          .font(.title)
+          .padding(.top)
+        
+        ChartView(
+          data: ContentView.sampleData,
+          title: "Large Chart (100%)",
+          selectedPoint: $selectedPoint,
+          selectedSeries: $selectedSeries
+        )
+        .frame(height: 250)
+        
+        ChartView(
+          data: ContentView.sampleData,
+          title: "Medium Chart (75%)",
+          selectedPoint: $selectedPoint,
+          selectedSeries: $selectedSeries
+        )
+        .frame(width: UIScreen.main.bounds.width * 0.75, height: 250)
+        
+        ChartView(
+          data: ContentView.sampleData,
+          title: "Small Chart (50%)",
+          selectedPoint: $selectedPoint,
+          selectedSeries: $selectedSeries
+        )
+        .frame(width: UIScreen.main.bounds.width * 0.5, height: 250)
+      }
+      .padding()
+    }
+  }
+}
+
+struct PreviewContainer: View {
+  var body: some View {
+    ContentView()
+  }
+}
+
+#Preview("Light Mode") {
+  PreviewContainer()
+    .preferredColorScheme(.light)
+}
+
+#Preview("Dark Mode") {
+  PreviewContainer()
+    .preferredColorScheme(.dark)
 }
