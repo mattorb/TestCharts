@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import Foundation
 
 struct DataPoint: Identifiable {
   let id = UUID()
@@ -11,7 +12,7 @@ struct DataPoint: Identifiable {
 struct ChartConfig {
   static let minDomain: Double = 10
   static let maxDomain: Double = 100
-  static let defaultDomain: Double = 100 // Changed to maximum for initial state
+  static let defaultDomain: Double = 100
   static let yRange: ClosedRange<Double> = -12...12
   static let xRange: ClosedRange<Double> = 0...100
 }
@@ -20,22 +21,44 @@ struct ChartInteractionState {
   var scrollPosition: Double
   var visibleDomain: Double
   var selectedPoint: DataPoint?
+  var lastZoomLocation: CGFloat?
   
-  init(initialPosition: Double = ChartConfig.maxDomain / 2, // Center the view
-       initialDomain: Double = ChartConfig.maxDomain) { // Start fully zoomed out
+  init(initialPosition: Double = ChartConfig.maxDomain / 2,
+       initialDomain: Double = ChartConfig.maxDomain) {
     self.scrollPosition = initialPosition
     self.visibleDomain = initialDomain
     self.selectedPoint = nil
   }
   
-  mutating func updateZoom(scale: Double) {
+  mutating func updateZoom(scale: Double, location: CGPoint, size: CGSize) {
+    // Convert point to relative position (0-1)
+    let relativeX = location.x / size.width
+    
+    // Calculate the current domain window
+    let domainStart = scrollPosition - visibleDomain / 2
+    
+    // Find the data point at the zoom location
+    let zoomPointInData = domainStart + visibleDomain * relativeX
+    
+    // Calculate new domain size
     let newDomain = visibleDomain / scale
-    visibleDomain = min(max(ChartConfig.minDomain, newDomain), ChartConfig.maxDomain)
+    let clampedDomain = min(max(ChartConfig.minDomain, newDomain), ChartConfig.maxDomain)
+    
+    // Calculate new scroll position to maintain zoom point
+    let newDomainStart = zoomPointInData - (clampedDomain * relativeX)
+    let newScrollPosition = newDomainStart + clampedDomain / 2
+    
+    // Update state with clamped values
+    visibleDomain = clampedDomain
+    scrollPosition = min(max(clampedDomain / 2, newScrollPosition), ChartConfig.maxDomain - clampedDomain / 2)
   }
   
   mutating func updateScroll(dragRatio: Double) {
     let dataMove = dragRatio * visibleDomain
-    scrollPosition = min(max(0, scrollPosition - dataMove), ChartConfig.maxDomain)
+    let newPosition = scrollPosition - dataMove
+    let minPosition = visibleDomain / 2
+    let maxPosition = ChartConfig.maxDomain - visibleDomain / 2
+    scrollPosition = min(max(minPosition, newPosition), maxPosition)
   }
   
   mutating func reset() {
@@ -75,7 +98,36 @@ struct ChartView: View {
   @Binding var selectedSeries: String?
   
   @State private var interaction = ChartInteractionState()
-  @State private var scrollX: Double = ChartConfig.maxDomain / 2 // Start at center
+  @State private var scrollX: Double = ChartConfig.maxDomain / 2
+  
+  private func distance(_ p1: (x: Double, y: Double), _ p2: (x: Double, y: Double)) -> Double {
+    let dx = p1.x - p2.x
+    let dy = p1.y - p2.y
+    return sqrt(dx * dx + dy * dy)
+  }
+  
+  private func handleTap(at location: CGPoint, proxy: ChartProxy) {
+    guard let xValue = proxy.value(atX: location.x, as: Double.self),
+          let yValue = proxy.value(atY: location.y, as: Double.self) else { return }
+    
+    // Filter by series if one is selected
+    let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
+    
+    // Find the nearest point by calculating actual distance to each point
+    let tapPoint = (x: xValue, y: yValue)
+    interaction.selectedPoint = filteredData.min(by: { point1, point2 in
+      distance((x: point1.x, y: point1.y), tapPoint) < 
+        distance((x: point2.x, y: point2.y), tapPoint)
+    })
+  }
+  
+  private func handleDrag(_ value: DragGesture.Value, size: CGSize) {
+    let dragRatio = value.translation.width / size.width
+    withAnimation(.interactiveSpring(response: 0.3)) {
+      interaction.updateScroll(dragRatio: dragRatio)
+      scrollX = interaction.scrollPosition
+    }
+  }
   
   private var chartTitle: some View {
     HStack {
@@ -93,6 +145,7 @@ struct ChartView: View {
       Button("Reset") {
         withAnimation(.spring()) {
           interaction.reset()
+          scrollX = interaction.scrollPosition
         }
       }
       .font(.caption)
@@ -173,20 +226,6 @@ struct ChartView: View {
     .padding(.top, 4)
   }
   
-  private func handleTap(at point: CGPoint, proxy: ChartProxy) {
-    guard let xValue = proxy.value(atX: point.x, as: Double.self) else { return }
-    let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
-    interaction.selectedPoint = filteredData.min(by: { abs($0.x - xValue) < abs($1.x - xValue) })
-  }
-  
-  private func handleDrag(_ value: DragGesture.Value, size: CGSize) {
-    let dragRatio = value.translation.width / size.width
-    withAnimation(.interactiveSpring(response: 0.3)) {
-      interaction.updateScroll(dragRatio: dragRatio)
-      scrollX = interaction.scrollPosition
-    }
-  }
-  
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       chartTitle
@@ -200,7 +239,9 @@ struct ChartView: View {
                 MagnificationGesture()
                   .onChanged { scale in
                     withAnimation(.interactiveSpring(response: 0.3)) {
-                      interaction.updateZoom(scale: scale)
+                      let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                      interaction.updateZoom(scale: scale, location: center, size: geometry.size)
+                      scrollX = interaction.scrollPosition
                     }
                   }
               )
