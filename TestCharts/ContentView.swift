@@ -8,71 +8,144 @@ struct DataPoint: Identifiable {
   let series: String
 }
 
+struct ChartConfig {
+  static let minDomain: Double = 10
+  static let maxDomain: Double = 100
+  static let defaultDomain: Double = 100 // Changed to maximum for initial state
+  static let yRange: ClosedRange<Double> = -12...12
+  static let xRange: ClosedRange<Double> = 0...100
+}
+
+struct ChartInteractionState {
+  var scrollPosition: Double
+  var visibleDomain: Double
+  var selectedPoint: DataPoint?
+  
+  init(initialPosition: Double = ChartConfig.maxDomain / 2, // Center the view
+       initialDomain: Double = ChartConfig.maxDomain) { // Start fully zoomed out
+    self.scrollPosition = initialPosition
+    self.visibleDomain = initialDomain
+    self.selectedPoint = nil
+  }
+  
+  mutating func updateZoom(scale: Double) {
+    let newDomain = visibleDomain / scale
+    visibleDomain = min(max(ChartConfig.minDomain, newDomain), ChartConfig.maxDomain)
+  }
+  
+  mutating func updateScroll(dragRatio: Double) {
+    let dataMove = dragRatio * visibleDomain
+    scrollPosition = min(max(0, scrollPosition - dataMove), ChartConfig.maxDomain)
+  }
+  
+  mutating func reset() {
+    scrollPosition = ChartConfig.maxDomain / 2
+    visibleDomain = ChartConfig.maxDomain
+    selectedPoint = nil
+  }
+}
+
+struct ChartLegendItem: View {
+  let series: String
+  let isSelected: Bool
+  let action: () -> Void
+  
+  private var color: Color {
+    series == "Sine Wave" ? .blue : .purple
+  }
+  
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 4) {
+        Circle()
+          .fill(color)
+          .frame(width: 8, height: 8)
+        Text(series)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .opacity(isSelected ? 1 : 0.5)
+  }
+}
+
 struct ChartView: View {
   let data: [DataPoint]
   let title: String
-  @Binding var selectedPoint: DataPoint?
   @Binding var selectedSeries: String?
   
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+  @State private var interaction = ChartInteractionState()
+  @State private var scrollX: Double = ChartConfig.maxDomain / 2 // Start at center
+  
+  private var chartTitle: some View {
+    HStack {
       Text(title)
         .font(.headline)
       
-      Chart {
-        ForEach(data) { point in
-          LineMark(
-            x: .value("Index", point.x),
-            y: .value("Value", point.y)
-          )
-          .foregroundStyle(by: .value("Series", point.series))
-          .opacity(selectedSeries == nil || selectedSeries == point.series ? 1 : 0.2)
-        }
-        
-        if let selectedPoint {
-          RuleMark(
-            x: .value("Selected", selectedPoint.x)
-          )
-          .foregroundStyle(.gray.opacity(0.3))
-          
-          PointMark(
-            x: .value("Index", selectedPoint.x),
-            y: .value("Value", selectedPoint.y)
-          )
-          .foregroundStyle(selectedPoint.series == "Sine Wave" ? .blue : .purple)
-          .symbolSize(100)
-        }
-      }
-      .chartForegroundStyleScale([
-        "Sine Wave": Color.blue,
-        "Cosine Wave": Color.purple
-      ])
-      .chartYScale(domain: -12...12)
-      .chartXScale(domain: 0...100)
-      .chartLegend(position: .bottom)
-      .frame(height: 200)
-      .chartOverlay { proxy in
-        GeometryReader { geometry in
-          Rectangle()
-            .fill(.clear)
-            .contentShape(Rectangle())
-            .gesture(
-              DragGesture()
-                .onChanged { value in
-                  let xPosition = value.location.x
-                  let x = proxy.value(atX: xPosition, as: Double.self) ?? 0
-                  let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
-                  
-                  selectedPoint = filteredData.min(by: { abs($0.x - x) < abs($1.x - x) })
-                }
-                .onEnded { _ in
-                  selectedPoint = nil
-                }
-            )
-        }
+      Spacer()
+      
+      if interaction.visibleDomain < ChartConfig.maxDomain {
+        Text(String(format: "%.1fx zoom", ChartConfig.maxDomain / interaction.visibleDomain))
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
       
-      if let selectedPoint {
+      Button("Reset") {
+        withAnimation(.spring()) {
+          interaction.reset()
+        }
+      }
+      .font(.caption)
+      .foregroundStyle(.blue)
+    }
+  }
+  
+  private var chartContent: some View {
+    Chart {
+      ForEach(data) { point in
+        LineMark(
+          x: .value("Index", point.x),
+          y: .value("Value", point.y)
+        )
+        .foregroundStyle(by: .value("Series", point.series))
+        .opacity(selectedSeries == nil || selectedSeries == point.series ? 1 : 0.2)
+      }
+      
+      if let selectedPoint = interaction.selectedPoint {
+        RuleMark(
+          x: .value("Selected", selectedPoint.x)
+        )
+        .foregroundStyle(.gray.opacity(0.3))
+        
+        PointMark(
+          x: .value("Index", selectedPoint.x),
+          y: .value("Value", selectedPoint.y)
+        )
+        .foregroundStyle(selectedPoint.series == "Sine Wave" ? .blue : .purple)
+        .symbolSize(100)
+      }
+    }
+    .chartForegroundStyleScale([
+      "Sine Wave": Color.blue,
+      "Cosine Wave": Color.purple
+    ])
+    .chartYScale(domain: ChartConfig.yRange)
+    .chartXScale(domain: ChartConfig.xRange)
+    .chartXVisibleDomain(length: interaction.visibleDomain)
+    .chartScrollPosition(x: $scrollX)
+    .chartScrollableAxes(.horizontal)
+    .chartLegend(position: .bottom)
+    .chartXAxis {
+      AxisMarks(values: .automatic(desiredCount: 5))
+    }
+    .chartYAxis {
+      AxisMarks(values: .automatic(desiredCount: 5))
+    }
+  }
+  
+  private var selectedPointInfo: some View {
+    Group {
+      if let selectedPoint = interaction.selectedPoint {
         HStack {
           Text(String(format: "X: %.0f", selectedPoint.x))
           Text(String(format: "Y: %.2f", selectedPoint.y))
@@ -81,29 +154,74 @@ struct ChartView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
       }
-      
-      HStack(spacing: 16) {
-        ForEach(["Sine Wave", "Cosine Wave"], id: \.self) { series in
-          Button(action: {
-            if selectedSeries == series {
-              selectedSeries = nil
-            } else {
-              selectedSeries = series
-            }
-          }) {
-            HStack(spacing: 4) {
-              Circle()
-                .fill(series == "Sine Wave" ? Color.blue : Color.purple)
-                .frame(width: 8, height: 8)
-              Text(series)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
+    }
+  }
+  
+  private var legendView: some View {
+    HStack(spacing: 16) {
+      ForEach(["Sine Wave", "Cosine Wave"], id: \.self) { series in
+        ChartLegendItem(
+          series: series,
+          isSelected: selectedSeries == nil || selectedSeries == series
+        ) {
+          withAnimation(.easeInOut(duration: 0.2)) {
+            selectedSeries = selectedSeries == series ? nil : series
           }
-          .opacity(selectedSeries == nil || selectedSeries == series ? 1 : 0.5)
         }
       }
-      .padding(.top, 4)
+    }
+    .padding(.top, 4)
+  }
+  
+  private func handleTap(at point: CGPoint, proxy: ChartProxy) {
+    guard let xValue = proxy.value(atX: point.x, as: Double.self) else { return }
+    let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
+    interaction.selectedPoint = filteredData.min(by: { abs($0.x - xValue) < abs($1.x - xValue) })
+  }
+  
+  private func handleDrag(_ value: DragGesture.Value, size: CGSize) {
+    let dragRatio = value.translation.width / size.width
+    withAnimation(.interactiveSpring(response: 0.3)) {
+      interaction.updateScroll(dragRatio: dragRatio)
+      scrollX = interaction.scrollPosition
+    }
+  }
+  
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      chartTitle
+      
+      chartContent
+        .chartOverlay { proxy in
+          GeometryReader { geometry in
+            Color.clear
+              .contentShape(Rectangle())
+              .gesture(
+                MagnificationGesture()
+                  .onChanged { scale in
+                    withAnimation(.interactiveSpring(response: 0.3)) {
+                      interaction.updateZoom(scale: scale)
+                    }
+                  }
+              )
+              .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                  .onChanged { value in
+                    if value.translation == .zero {
+                      handleTap(at: value.location, proxy: proxy)
+                    } else {
+                      handleDrag(value, size: geometry.size)
+                    }
+                  }
+                  .onEnded { _ in
+                    interaction.selectedPoint = nil
+                  }
+              )
+          }
+        }
+      
+      selectedPointInfo
+      legendView
     }
     .padding()
     .background(
@@ -115,7 +233,6 @@ struct ChartView: View {
 }
 
 struct ContentView: View {
-  // Move data generation to a separate type
   static let sampleData: [DataPoint] = {
     let sineData = (0..<100).map { i in
       let x = Double(i)
@@ -130,57 +247,50 @@ struct ContentView: View {
     return sineData + cosineData
   }()
   
-  @State private var selectedPoint: DataPoint?
   @State private var selectedSeries: String?
   
   var body: some View {
     ScrollView {
       VStack(spacing: 20) {
-        Text("Wave Comparison")
+        Text("Interactive Wave Charts")
           .font(.title)
           .padding(.top)
         
-        ChartView(
-          data: ContentView.sampleData,
-          title: "Large Chart (100%)",
-          selectedPoint: $selectedPoint,
-          selectedSeries: $selectedSeries
-        )
-        .frame(height: 250)
+        Text("Pinch to zoom • Drag to pan • Tap to select")
+          .font(.caption)
+          .foregroundStyle(.secondary)
         
         ChartView(
           data: ContentView.sampleData,
-          title: "Medium Chart (75%)",
-          selectedPoint: $selectedPoint,
+          title: "Large Chart",
           selectedSeries: $selectedSeries
         )
-        .frame(width: UIScreen.main.bounds.width * 0.75, height: 250)
         
         ChartView(
           data: ContentView.sampleData,
-          title: "Small Chart (50%)",
-          selectedPoint: $selectedPoint,
+          title: "Medium Chart",
           selectedSeries: $selectedSeries
         )
-        .frame(width: UIScreen.main.bounds.width * 0.5, height: 250)
+        .frame(width: UIScreen.main.bounds.width * 0.75)
+        
+        ChartView(
+          data: ContentView.sampleData,
+          title: "Small Chart",
+          selectedSeries: $selectedSeries
+        )
+        .frame(width: UIScreen.main.bounds.width * 0.5)
       }
       .padding()
     }
   }
 }
 
-struct PreviewContainer: View {
-  var body: some View {
-    ContentView()
-  }
-}
-
 #Preview("Light Mode") {
-  PreviewContainer()
+  ContentView()
     .preferredColorScheme(.light)
 }
 
 #Preview("Dark Mode") {
-  PreviewContainer()
+  ContentView()
     .preferredColorScheme(.dark)
 }
