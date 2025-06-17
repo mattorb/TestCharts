@@ -46,17 +46,18 @@ struct ChartInteractionState {
     
     // Calculate new scroll position to maintain zoom point
     let newDomainStart = zoomPointInData - (clampedDomain * relativeX)
-    let newScrollPosition = newDomainStart + clampedDomain / 2
+    let minScrollPosition = 0.0
+    let maxScrollPosition = ChartConfig.maxDomain - clampedDomain / 2
     
     // Update state with clamped values
     visibleDomain = clampedDomain
-    scrollPosition = min(max(clampedDomain / 2, newScrollPosition), ChartConfig.maxDomain - clampedDomain / 2)
+    scrollPosition = min(max(minScrollPosition, newDomainStart + clampedDomain / 2), maxScrollPosition)
   }
   
   mutating func updateScroll(dragRatio: Double) {
     let dataMove = dragRatio * visibleDomain
     let newPosition = scrollPosition - dataMove
-    let minPosition = visibleDomain / 2
+    let minPosition = 0.0
     let maxPosition = ChartConfig.maxDomain - visibleDomain / 2
     scrollPosition = min(max(minPosition, newPosition), maxPosition)
   }
@@ -65,30 +66,6 @@ struct ChartInteractionState {
     scrollPosition = ChartConfig.maxDomain / 2
     visibleDomain = ChartConfig.maxDomain
     selectedPoint = nil
-  }
-}
-
-struct ChartLegendItem: View {
-  let series: String
-  let isSelected: Bool
-  let action: () -> Void
-  
-  private var color: Color {
-    series == "Sine Wave" ? .blue : .purple
-  }
-  
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 4) {
-        Circle()
-          .fill(color)
-          .frame(width: 8, height: 8)
-        Text(series)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
-    }
-    .opacity(isSelected ? 1 : 0.5)
   }
 }
 
@@ -113,12 +90,38 @@ struct ChartView: View {
     // Filter by series if one is selected
     let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
     
-    // Find the nearest point by calculating actual distance to each point
+    // Calculate the visible domain window
+    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
+    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
+    
+    // Filter points to visible domain plus a small buffer
+    let buffer = interaction.visibleDomain * 0.1 // 10% buffer
+    let visibleData = filteredData.filter { point in
+      point.x >= (domainStart - buffer) && point.x <= (domainEnd + buffer)
+    }
+    
+    // Find the nearest point considering the chart's scale
     let tapPoint = (x: xValue, y: yValue)
-    interaction.selectedPoint = filteredData.min(by: { point1, point2 in
-      distance((x: point1.x, y: point1.y), tapPoint) < 
-        distance((x: point2.x, y: point2.y), tapPoint)
+    interaction.selectedPoint = visibleData.min(by: { point1, point2 in
+      let dist1 = getScaledDistance(from: tapPoint, to: point1, proxy: proxy)
+      let dist2 = getScaledDistance(from: tapPoint, to: point2, proxy: proxy)
+      return dist1 < dist2
     })
+  }
+  
+  private func getScaledDistance(from tap: (x: Double, y: Double), to point: DataPoint, proxy: ChartProxy) -> Double {
+    // Convert data points to screen coordinates
+    guard let tapX = proxy.position(forX: tap.x),
+          let tapY = proxy.position(forY: tap.y),
+          let pointX = proxy.position(forX: point.x),
+          let pointY = proxy.position(forY: point.y) else {
+      return .infinity
+    }
+    
+    // Calculate distance in screen coordinates
+    let dx = tapX - pointX
+    let dy = tapY - pointY
+    return sqrt(dx * dx + dy * dy)
   }
   
   private func handleDrag(_ value: DragGesture.Value, size: CGSize) {
@@ -210,22 +213,6 @@ struct ChartView: View {
     }
   }
   
-  private var legendView: some View {
-    HStack(spacing: 16) {
-      ForEach(["Sine Wave", "Cosine Wave"], id: \.self) { series in
-        ChartLegendItem(
-          series: series,
-          isSelected: selectedSeries == nil || selectedSeries == series
-        ) {
-          withAnimation(.easeInOut(duration: 0.2)) {
-            selectedSeries = selectedSeries == series ? nil : series
-          }
-        }
-      }
-    }
-    .padding(.top, 4)
-  }
-  
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       chartTitle
@@ -262,7 +249,6 @@ struct ChartView: View {
         }
       
       selectedPointInfo
-      legendView
     }
     .padding()
     .background(
@@ -306,20 +292,21 @@ struct ContentView: View {
           title: "Large Chart",
           selectedSeries: $selectedSeries
         )
+        .frame(width:400)
         
         ChartView(
           data: ContentView.sampleData,
           title: "Medium Chart",
           selectedSeries: $selectedSeries
         )
-        .frame(width: UIScreen.main.bounds.width * 0.75)
+        .frame(width:300)
         
         ChartView(
           data: ContentView.sampleData,
           title: "Small Chart",
           selectedSeries: $selectedSeries
         )
-        .frame(width: UIScreen.main.bounds.width * 0.5)
+        .frame(width:200)
       }
       .padding()
     }
