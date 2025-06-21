@@ -83,9 +83,13 @@ struct ChartView: View {
     return sqrt(dx * dx + dy * dy)
   }
   
-  private func handleTap(at location: CGPoint, proxy: ChartProxy) {
-    guard let xValue = proxy.value(atX: location.x, as: Double.self),
-          let yValue = proxy.value(atY: location.y, as: Double.self) else { return }
+  private func handleTap(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
+    // Convert tap location to data coordinates using our robust transformation
+    guard let tapDataPoint = screenToDataCoordinates(
+      screenPoint: location, 
+      geometry: geometry, 
+      proxy: proxy
+    ) else { return }
     
     // Filter by series if one is selected
     let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
@@ -95,32 +99,81 @@ struct ChartView: View {
     let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
     
     // Filter points to visible domain plus a small buffer
-    let buffer = interaction.visibleDomain * 0.1 // 10% buffer
+    let buffer = interaction.visibleDomain * 0.1
     let visibleData = filteredData.filter { point in
       point.x >= (domainStart - buffer) && point.x <= (domainEnd + buffer)
     }
     
-    // Find the nearest point considering the chart's scale
-    let tapPoint = (x: xValue, y: yValue)
+    // Find the nearest point using robust distance calculation
     interaction.selectedPoint = visibleData.min(by: { point1, point2 in
-      let dist1 = getScaledDistance(from: tapPoint, to: point1, proxy: proxy)
-      let dist2 = getScaledDistance(from: tapPoint, to: point2, proxy: proxy)
+      let dist1 = calculateTapDistance(tapPoint: tapDataPoint, dataPoint: point1, geometry: geometry, proxy: proxy)
+      let dist2 = calculateTapDistance(tapPoint: tapDataPoint, dataPoint: point2, geometry: geometry, proxy: proxy)
       return dist1 < dist2
     })
   }
   
-  private func getScaledDistance(from tap: (x: Double, y: Double), to point: DataPoint, proxy: ChartProxy) -> Double {
-    // Convert data points to screen coordinates
-    guard let tapX = proxy.position(forX: tap.x),
-          let tapY = proxy.position(forY: tap.y),
-          let pointX = proxy.position(forX: point.x),
-          let pointY = proxy.position(forY: point.y) else {
-      return .infinity
+  private func screenToDataCoordinates(screenPoint: CGPoint, geometry: GeometryProxy, proxy: ChartProxy) -> (x: Double, y: Double)? {
+    // Method 1: Try using ChartProxy directly (works in most cases)
+    if let xValue = proxy.value(atX: screenPoint.x, as: Double.self),
+       let yValue = proxy.value(atY: screenPoint.y, as: Double.self) {
+      return (x: xValue, y: yValue)
     }
     
-    // Calculate distance in screen coordinates
-    let dx = tapX - pointX
-    let dy = tapY - pointY
+    // Method 2: Manual transformation (fallback for edge cases)
+    let relativeX = screenPoint.x / geometry.size.width
+    let relativeY = 1.0 - (screenPoint.y / geometry.size.height) // Flip Y
+    
+    // Calculate visible domain bounds
+    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
+    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
+    
+    // Map to data coordinates
+    let xValue = domainStart + (domainEnd - domainStart) * relativeX
+    let yRange = ChartConfig.yRange
+    let yValue = yRange.lowerBound + (yRange.upperBound - yRange.lowerBound) * relativeY
+    
+    return (x: xValue, y: yValue)
+  }
+  
+  private func dataToScreenCoordinates(dataPoint: (x: Double, y: Double), geometry: GeometryProxy, proxy: ChartProxy) -> CGPoint? {
+    // Try using ChartProxy
+    if let screenX = proxy.position(forX: dataPoint.x),
+       let screenY = proxy.position(forY: dataPoint.y) {
+      return CGPoint(x: screenX, y: screenY)
+    }
+    
+    // Manual fallback
+    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
+    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
+    
+    guard domainEnd > domainStart else { return nil }
+    
+    let relativeX = (dataPoint.x - domainStart) / (domainEnd - domainStart)
+    let yRange = ChartConfig.yRange
+    let relativeY = (dataPoint.y - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
+    
+    let screenX = relativeX * geometry.size.width
+    let screenY = (1.0 - relativeY) * geometry.size.height // Flip Y
+    
+    return CGPoint(x: screenX, y: screenY)
+  }
+  
+  private func calculateTapDistance(tapPoint: (x: Double, y: Double), dataPoint: DataPoint, geometry: GeometryProxy, proxy: ChartProxy) -> Double {
+    // Convert both points to screen coordinates for accurate distance
+    guard let tapScreen = dataToScreenCoordinates(dataPoint: tapPoint, geometry: geometry, proxy: proxy),
+          let pointScreen = dataToScreenCoordinates(dataPoint: (x: dataPoint.x, y: dataPoint.y), geometry: geometry, proxy: proxy) else {
+      // Fallback to weighted data coordinate distance
+      let xWeight = geometry.size.width / interaction.visibleDomain
+      let yWeight = geometry.size.height / (ChartConfig.yRange.upperBound - ChartConfig.yRange.lowerBound)
+      
+      let dx = (tapPoint.x - dataPoint.x) * xWeight
+      let dy = (tapPoint.y - dataPoint.y) * yWeight
+      return sqrt(dx * dx + dy * dy)
+    }
+    
+    // Calculate screen space distance
+    let dx = tapScreen.x - pointScreen.x
+    let dy = tapScreen.y - pointScreen.y
     return sqrt(dx * dx + dy * dy)
   }
   
@@ -236,7 +289,7 @@ struct ChartView: View {
                 DragGesture(minimumDistance: 0)
                   .onChanged { value in
                     if value.translation == .zero {
-                      handleTap(at: value.location, proxy: proxy)
+                      handleTap(at: value.location, proxy: proxy, geometry: geometry)
                     } else {
                       handleDrag(value, size: geometry.size)
                     }
