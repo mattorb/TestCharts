@@ -61,15 +61,33 @@ struct ChartView: View {
       actualScrollX: scrollX
     ) else { return }
     
+    // Debug: Print tap details and actual domain bounds
+    if let leftValue = proxy.value(atX: 0, as: Double.self),
+       let rightValue = proxy.value(atX: geometry.size.width, as: Double.self) {
+      print("ChartProxy actual domain: \(leftValue) to \(rightValue)")
+    }
+    print("Tap at screen: (\(location.x), \(location.y)) -> data: (\(tapDataPoint.x), \(tapDataPoint.y))")
+//    print("Now using ChartProxy domain: \(domainStart) to \(domainEnd)")
+    
     // Filter by series if one is selected
     let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
     
-    // Calculate the visible domain window using actual chart scroll position (leading edge)
-    let domainStart = scrollX
-    let domainEnd = scrollX + interaction.visibleDomain
+    // Get actual domain bounds from ChartProxy
+    let domainStart: Double
+    let domainEnd: Double
+    
+    if let leftValue = proxy.value(atX: 0, as: Double.self),
+       let rightValue = proxy.value(atX: geometry.size.width, as: Double.self) {
+      domainStart = leftValue
+      domainEnd = rightValue
+    } else {
+      // Fallback if ChartProxy fails
+      domainStart = 0
+      domainEnd = ChartConfig.maxDomain
+    }
     
     // Filter points to visible domain plus a small buffer
-    let buffer = interaction.visibleDomain * 0.1
+    let buffer = (domainEnd - domainStart) * 0.1
     let visibleData = filteredData.filter { point in
       point.x >= (domainStart - buffer) && point.x <= (domainEnd + buffer)
     }
@@ -205,10 +223,8 @@ struct ChartView: View {
       .foregroundStyle(.secondary)
       
       
-      let actualDomainStart = scrollX
-      let actualDomainEnd = scrollX + interaction.visibleDomain
       HStack {
-        Text(String(format: "Actual Domain: %.1f - %.1f", actualDomainStart, actualDomainEnd))
+        Text("Domain: Use ChartProxy for accurate bounds")
       }
       .font(.caption2)
       .foregroundStyle(.secondary)
