@@ -21,7 +21,6 @@ struct ChartInteractionState {
   var scrollPosition: Double
   var visibleDomain: Double
   var selectedPoint: DataPoint?
-  var lastZoomLocation: CGFloat?
   
   init(initialPosition: Double = ChartConfig.maxDomain / 2,
        initialDomain: Double = ChartConfig.maxDomain) {
@@ -30,37 +29,6 @@ struct ChartInteractionState {
     self.selectedPoint = nil
   }
   
-  mutating func updateZoom(scale: Double, location: CGPoint, size: CGSize) {
-    // Convert point to relative position (0-1)
-    let relativeX = location.x / size.width
-    
-    // Calculate the current domain window
-    let domainStart = scrollPosition - visibleDomain / 2
-    
-    // Find the data point at the zoom location
-    let zoomPointInData = domainStart + visibleDomain * relativeX
-    
-    // Calculate new domain size
-    let newDomain = visibleDomain / scale
-    let clampedDomain = min(max(ChartConfig.minDomain, newDomain), ChartConfig.maxDomain)
-    
-    // Calculate new scroll position to maintain zoom point
-    let newDomainStart = zoomPointInData - (clampedDomain * relativeX)
-    let minScrollPosition = 0.0
-    let maxScrollPosition = ChartConfig.maxDomain - clampedDomain / 2
-    
-    // Update state with clamped values
-    visibleDomain = clampedDomain
-    scrollPosition = min(max(minScrollPosition, newDomainStart + clampedDomain / 2), maxScrollPosition)
-  }
-  
-  mutating func updateScroll(dragRatio: Double) {
-    let dataMove = dragRatio * visibleDomain
-    let newPosition = scrollPosition - dataMove
-    let minPosition = 0.0
-    let maxPosition = ChartConfig.maxDomain - visibleDomain / 2
-    scrollPosition = min(max(minPosition, newPosition), maxPosition)
-  }
   
   mutating func reset() {
     scrollPosition = ChartConfig.maxDomain / 2
@@ -76,6 +44,7 @@ struct ChartView: View {
   
   @State private var interaction = ChartInteractionState()
   @State private var scrollX: Double = ChartConfig.maxDomain / 2
+  @State private var debugTimer: Timer?
   
   private func distance(_ p1: (x: Double, y: Double), _ p2: (x: Double, y: Double)) -> Double {
     let dx = p1.x - p2.x
@@ -88,15 +57,16 @@ struct ChartView: View {
     guard let tapDataPoint = screenToDataCoordinates(
       screenPoint: location, 
       geometry: geometry, 
-      proxy: proxy
+      proxy: proxy,
+      actualScrollX: scrollX
     ) else { return }
     
     // Filter by series if one is selected
     let filteredData = selectedSeries == nil ? data : data.filter { $0.series == selectedSeries }
     
-    // Calculate the visible domain window
-    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
-    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
+    // Calculate the visible domain window using actual chart scroll position (leading edge)
+    let domainStart = scrollX
+    let domainEnd = scrollX + interaction.visibleDomain
     
     // Filter points to visible domain plus a small buffer
     let buffer = interaction.visibleDomain * 0.1
@@ -112,78 +82,41 @@ struct ChartView: View {
     })
   }
   
-  private func screenToDataCoordinates(screenPoint: CGPoint, geometry: GeometryProxy, proxy: ChartProxy) -> (x: Double, y: Double)? {
-    // Method 1: Try using ChartProxy directly (works in most cases)
-    if let xValue = proxy.value(atX: screenPoint.x, as: Double.self),
-       let yValue = proxy.value(atY: screenPoint.y, as: Double.self) {
-      return (x: xValue, y: yValue)
+  private func screenToDataCoordinates(screenPoint: CGPoint, geometry: GeometryProxy, proxy: ChartProxy, actualScrollX: Double) -> (x: Double, y: Double)? {
+    // Trust ChartProxy - it handles all zoom/scroll transformations correctly
+    guard let xValue = proxy.value(atX: screenPoint.x, as: Double.self),
+          let yValue = proxy.value(atY: screenPoint.y, as: Double.self) else {
+      return nil
     }
-    
-    // Method 2: Manual transformation (fallback for edge cases)
-    let relativeX = screenPoint.x / geometry.size.width
-    let relativeY = 1.0 - (screenPoint.y / geometry.size.height) // Flip Y
-    
-    // Calculate visible domain bounds
-    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
-    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
-    
-    // Map to data coordinates
-    let xValue = domainStart + (domainEnd - domainStart) * relativeX
-    let yRange = ChartConfig.yRange
-    let yValue = yRange.lowerBound + (yRange.upperBound - yRange.lowerBound) * relativeY
     
     return (x: xValue, y: yValue)
   }
   
   private func dataToScreenCoordinates(dataPoint: (x: Double, y: Double), geometry: GeometryProxy, proxy: ChartProxy) -> CGPoint? {
-    // Try using ChartProxy
-    if let screenX = proxy.position(forX: dataPoint.x),
-       let screenY = proxy.position(forY: dataPoint.y) {
-      return CGPoint(x: screenX, y: screenY)
+    // Trust ChartProxy - it handles zoom/scroll automatically
+    guard let screenX = proxy.position(forX: dataPoint.x),
+          let screenY = proxy.position(forY: dataPoint.y) else {
+      return nil
     }
-    
-    // Manual fallback
-    let domainStart = interaction.scrollPosition - interaction.visibleDomain / 2
-    let domainEnd = interaction.scrollPosition + interaction.visibleDomain / 2
-    
-    guard domainEnd > domainStart else { return nil }
-    
-    let relativeX = (dataPoint.x - domainStart) / (domainEnd - domainStart)
-    let yRange = ChartConfig.yRange
-    let relativeY = (dataPoint.y - yRange.lowerBound) / (yRange.upperBound - yRange.lowerBound)
-    
-    let screenX = relativeX * geometry.size.width
-    let screenY = (1.0 - relativeY) * geometry.size.height // Flip Y
     
     return CGPoint(x: screenX, y: screenY)
   }
   
   private func calculateTapDistance(tapPoint: (x: Double, y: Double), dataPoint: DataPoint, geometry: GeometryProxy, proxy: ChartProxy) -> Double {
-    // Convert both points to screen coordinates for accurate distance
+    // Use screen coordinate distance - ChartProxy handles transformations correctly
     guard let tapScreen = dataToScreenCoordinates(dataPoint: tapPoint, geometry: geometry, proxy: proxy),
           let pointScreen = dataToScreenCoordinates(dataPoint: (x: dataPoint.x, y: dataPoint.y), geometry: geometry, proxy: proxy) else {
-      // Fallback to weighted data coordinate distance
-      let xWeight = geometry.size.width / interaction.visibleDomain
-      let yWeight = geometry.size.height / (ChartConfig.yRange.upperBound - ChartConfig.yRange.lowerBound)
-      
-      let dx = (tapPoint.x - dataPoint.x) * xWeight
-      let dy = (tapPoint.y - dataPoint.y) * yWeight
+      // If screen conversion fails, fall back to simple data coordinate distance
+      let dx = tapPoint.x - dataPoint.x
+      let dy = tapPoint.y - dataPoint.y
       return sqrt(dx * dx + dy * dy)
     }
     
-    // Calculate screen space distance
     let dx = tapScreen.x - pointScreen.x
     let dy = tapScreen.y - pointScreen.y
     return sqrt(dx * dx + dy * dy)
   }
   
-  private func handleDrag(_ value: DragGesture.Value, size: CGSize) {
-    let dragRatio = value.translation.width / size.width
-    withAnimation(.interactiveSpring(response: 0.3)) {
-      interaction.updateScroll(dragRatio: dragRatio)
-      scrollX = interaction.scrollPosition
-    }
-  }
   
   private var chartTitle: some View {
     HStack {
@@ -192,20 +125,6 @@ struct ChartView: View {
       
       Spacer()
       
-      if interaction.visibleDomain < ChartConfig.maxDomain {
-        Text(String(format: "%.1fx zoom", ChartConfig.maxDomain / interaction.visibleDomain))
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      
-      Button("Reset") {
-        withAnimation(.spring()) {
-          interaction.reset()
-          scrollX = interaction.scrollPosition
-        }
-      }
-      .font(.caption)
-      .foregroundStyle(.blue)
     }
   }
   
@@ -243,6 +162,9 @@ struct ChartView: View {
     .chartXVisibleDomain(length: interaction.visibleDomain)
     .chartScrollPosition(x: $scrollX)
     .chartScrollableAxes(.horizontal)
+    .onChange(of: scrollX) { _, newValue in
+      interaction.scrollPosition = newValue
+    }
     .chartLegend(position: .bottom)
     .chartXAxis {
       AxisMarks(values: .automatic(desiredCount: 5))
@@ -266,6 +188,54 @@ struct ChartView: View {
     }
   }
   
+  @ViewBuilder
+  private var debugInfo: some View {
+    #if DEBUG
+    VStack(alignment: .leading, spacing: 2) {
+      Text("Debug Info:")
+        .font(.caption2)
+        .fontWeight(.semibold)
+        .foregroundStyle(.secondary)
+      
+      HStack {
+        Text(String(format: "Visible Domain: %.1f", interaction.visibleDomain))
+        Text(String(format: "Scroll Position: %.1f", interaction.scrollPosition))
+      }
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      
+      
+      let actualDomainStart = scrollX
+      let actualDomainEnd = scrollX + interaction.visibleDomain
+      HStack {
+        Text(String(format: "Actual Domain: %.1f - %.1f", actualDomainStart, actualDomainEnd))
+      }
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      
+      HStack {
+        Text(String(format: "Chart ScrollX: %.1f", scrollX))
+        Text(String(format: "Internal ScrollPos: %.1f", interaction.scrollPosition))
+      }
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      
+      // Add Chart's actual domain bounds using ChartProxy
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Chart Framework Values:")
+          .font(.caption2)
+          .fontWeight(.semibold)
+          .foregroundStyle(.orange)
+        
+        // We'll need to pass proxy info here - let's add it as a parameter
+      }
+      .font(.caption2)
+      .foregroundStyle(.orange)
+    }
+    .padding(.top, 4)
+    #endif
+  }
+  
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       chartTitle
@@ -275,24 +245,13 @@ struct ChartView: View {
           GeometryReader { geometry in
             Color.clear
               .contentShape(Rectangle())
-              .gesture(
-                MagnificationGesture()
-                  .onChanged { scale in
-                    withAnimation(.interactiveSpring(response: 0.3)) {
-                      let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                      interaction.updateZoom(scale: scale, location: center, size: geometry.size)
-                      scrollX = interaction.scrollPosition
-                    }
-                  }
-              )
               .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                   .onChanged { value in
                     if value.translation == .zero {
                       handleTap(at: value.location, proxy: proxy, geometry: geometry)
-                    } else {
-                      handleDrag(value, size: geometry.size)
                     }
+                    // Let Chart framework handle drag/pan - don't interfere
                   }
                   .onEnded { _ in
                     interaction.selectedPoint = nil
@@ -302,6 +261,8 @@ struct ChartView: View {
         }
       
       selectedPointInfo
+      
+      debugInfo
     }
     .padding()
     .background(
@@ -336,7 +297,7 @@ struct ContentView: View {
           .font(.title)
           .padding(.top)
         
-        Text("Pinch to zoom • Drag to pan • Tap to select")
+        Text("Drag to pan • Tap to select")
           .font(.caption)
           .foregroundStyle(.secondary)
         
